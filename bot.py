@@ -28,7 +28,7 @@ if not all([MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE]):
 
 # --- DAFTAR ID ROLE YANG DIIZINKAN UNTUK MENGGUNAKAN !setadmin (dan !createevent, !endevent) ---
 ALLOWED_SETADMIN_ROLES = [
-    1381168735112659015 # Ini adalah Role ID yang Anda berikan
+    12345678 # Ini adalah Role ID yang Anda berikan (pakai discord id)
 ]
 if not ALLOWED_SETADMIN_ROLES:
     print("PERINGATAN: ALLOWED_SETADMIN_ROLES kosong. Tidak ada role yang bisa menggunakan !setadmin, !createevent, !endevent.")
