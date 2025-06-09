@@ -8,4 +8,15 @@ Then, activate it with:
 
 Note: This tutorial is for Windows only.
 
+Create a .env file in your text editor and add the following:
+
+DISCORD_TOKEN=
+MYSQL_HOST=
+MYSQL_USER=
+MYSQL_PASSWORD=
+MYSQL_DATABASE=
+
+
+Make sure to fill in the values with your own config!
+
 Credit By: Syahdana Haniif
