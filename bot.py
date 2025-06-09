@@ -26,12 +26,12 @@ if not all([MYSQL_HOST, MYSQL_USER, MYSQL_DATABASE]):
     print("Error: Pastikan semua variabel lingkungan MySQL (MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE) diatur.")
     exit()
 
-# --- DAFTAR ID ROLE YANG DIIZINKAN UNTUK MENGGUNAKAN !setadmin (dan !createevent, !endevent) ---
+# --- DAFTAR ID ROLE YANG DIIZINKAN UNTUK MENGGUNAKAN !setadmin, !addcash, !removecash ---
 ALLOWED_SETADMIN_ROLES = [
-    12345678 # Ini adalah Role ID yang Anda berikan (pakai discord id)
+    1381168735112659015 # Ini adalah Role ID yang Anda berikan
 ]
 if not ALLOWED_SETADMIN_ROLES:
-    print("PERINGATAN: ALLOWED_SETADMIN_ROLES kosong. Tidak ada role yang bisa menggunakan !setadmin, !createevent, !endevent.")
+    print("PERINGATAN: ALLOWED_SETADMIN_ROLES kosong. Tidak ada role yang bisa menggunakan !setadmin, !addcash, !removecash.")
 
 # --- Definisi Intents Discord ---
 intents = discord.Intents.default()
@@ -121,7 +121,7 @@ class BlackjackGame:
             return "dealer_bust"
         elif player_score > dealer_score:
             return "player_win"
-        elif dealer_score > player_score:
+        elif dealer_score > player_score: # PERBAIKAN BUG: sebelumnya (dealer_score > dealer_score)
             return "dealer_win"
         else:
             return "tie"
@@ -150,12 +150,44 @@ active_flipcoin_games = {}
 FLIPCOIN_HEAD_EMOJI = '🪙' # Koin
 FLIPCOIN_TAIL_EMOJI = '🔵' # Lingkaran Biru
 
-# --- Event Game Constants ---
-# Untuk event bola
-EVENT_TEAM_RED_EMOJI = '🔴'
-EVENT_TEAM_BLUE_EMOJI = '🔵' # Atau bisa '🟦' atau '🔷'
-active_event_messages = {} # {message_id: event_id}
+# --- Roulette Game Constants ---
+ROULETTE_NUMBERS = {
+    0: 'hijau',
+    1: 'merah', 2: 'hitam', 3: 'merah', 4: 'hitam', 5: 'merah', 6: 'hitam',
+    7: 'merah', 8: 'hitam', 9: 'merah', 10: 'hitam', 11: 'hitam', 12: 'merah',
+    13: 'hitam', 14: 'merah', 15: 'hitam', 16: 'merah', 17: 'hitam', 18: 'merah',
+    19: 'merah', 20: 'hitam', 21: 'merah', 22: 'hitam', 23: 'merah', 24: 'hitam',
+    25: 'merah', 26: 'hitam', 27: 'merah', 28: 'hitam', 29: 'hitam', 30: 'merah',
+    31: 'hitam', 32: 'merah', 33: 'hitam', 34: 'merah', 35: 'hitam', 36: 'merah'
+}
 
+# Mapping untuk taruhan Dozens dan Columns
+ROULETTE_DOZENS = {
+    '1st12': list(range(1, 13)),   # 1-12
+    '2nd12': list(range(13, 25)),  # 13-24
+    '3rd12': list(range(25, 37))   # 25-36
+}
+ROULETTE_COLUMNS = { # (1, 4, 7...34), (2, 5, 8...35), (3, 6, 9...36)
+    'col1': [n for n in range(1, 37) if n % 3 == 1],
+    'col2': [n for n in range(1, 37) if n % 3 == 2],
+    'col3': [n for n in range(1, 37) if n % 3 == 0]
+}
+
+# Pembayaran (Payouts)
+ROULETTE_PAYOUTS = {
+    'number': 35,  # 1 to 1 for a single number (35:1)
+    'color': 1,    # 1 to 1 (1:1)
+    'parity': 1,   # 1 to 1 (1:1) (odd/even)
+    'half': 1,     # 1 to 1 (1:1) (high/low)
+    'dozen': 2,    # 2 to 1 (2:1)
+    'column': 2    # 2 to 1 (2:1)
+}
+
+# State management untuk roulette
+current_roulette_rounds = {} # {channel_id: {"status": "betting", "round_id": str, "message_id": int, "bets": {user_id: [taruhan]}}}
+ROULETTE_RED_EMOJI = '🔴'
+ROULETTE_BLACK_EMOJI = '⚫' # Menggunakan emoji hitam untuk warna hitam
+ROULETTE_BET_MESSAGE_TO_USER = {} # {message_id: channel_id} agar on_reaction_add bisa cari round_id
 
 # --- Fungsi-fungsi untuk Interaksi Database MySQL ---
 
@@ -234,7 +266,7 @@ async def update_last_daily_claim(user_id: int, timestamp: datetime) -> bool:
         if cursor: cursor.close()
         if conn: conn.close()
 
-# --- Fungsi untuk Manajemen Admin Bot (Termasuk Event) ---
+# --- Fungsi untuk Manajemen Admin Bot ---
 async def is_admin_cash_adder(user_id: int) -> bool:
     """Memeriksa apakah user_id adalah admin penambah cash dari database."""
     conn = get_db_connection()
@@ -281,119 +313,49 @@ async def remove_admin_cash_adder(user_id: int) -> bool:
         if cursor: cursor.close()
         if conn: conn.close()
 
-# --- Fungsi untuk Manajemen Event ---
-async def create_event_db(event_type: str, event_id: int, bet_cost: int, description: str, created_by: int) -> bool:
+# --- Fungsi untuk Roulette ---
+async def add_roulette_bet(round_id: str, user_id: int, bet_type: str, bet_choice: str, amount: int) -> bool:
     conn = get_db_connection()
     if conn is None: return False
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO events (event_id, event_type, description, bet_cost, created_by) VALUES (%s, %s, %s, %s, %s)",
-            (event_id, event_type, description, bet_cost, created_by)
+            "INSERT INTO roulette_bets (round_id, user_id, bet_type, bet_choice, amount) VALUES (%s, %s, %s, %s, %s)",
+            (round_id, user_id, bet_type, bet_choice, amount)
         )
         conn.commit()
         return True
     except Error as e:
-        print(f"ERROR CREATE EVENT: {e}")
+        print(f"ERROR ADD ROULETTE BET: {e}")
         return False
     finally:
         if cursor: cursor.close()
         if conn: conn.close()
 
-async def get_event_by_id(event_id: int) -> dict:
-    conn = get_db_connection()
-    if conn is None: return None
-    cursor = conn.cursor(dictionary=True) # Untuk mendapatkan hasil sebagai dictionary
-    try:
-        cursor.execute("SELECT * FROM events WHERE event_id = %s", (event_id,))
-        return cursor.fetchone()
-    except Error as e:
-        print(f"ERROR GET EVENT BY ID: {e}")
-        return None
-    finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
-
-async def update_event_message_info(event_id: int, message_id: int, channel_id: int) -> bool:
-    conn = get_db_connection()
-    if conn is None: return False
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "UPDATE events SET message_id = %s, channel_id = %s WHERE event_id = %s",
-            (message_id, channel_id, event_id)
-        )
-        conn.commit()
-        return cursor.rowcount > 0
-    except Error as e:
-        print(f"ERROR UPDATE EVENT MESSAGE INFO: {e}")
-        return False
-    finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
-
-async def get_open_events() -> list[dict]:
+async def get_roulette_bets_for_round(round_id: str) -> list[dict]:
     conn = get_db_connection()
     if conn is None: return []
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM events WHERE status = 'open'")
+        cursor.execute("SELECT user_id, bet_type, bet_choice, amount FROM roulette_bets WHERE round_id = %s", (round_id,))
         return cursor.fetchall()
     except Error as e:
-        print(f"ERROR GET OPEN EVENTS: {e}")
+        print(f"ERROR GET ROULETTE BETS: {e}")
         return []
     finally:
         if cursor: cursor.close()
         if conn: conn.close()
 
-async def add_participant_to_event(event_id: int, user_id: int, choice: str, paid_amount: int) -> bool:
+async def clear_roulette_bets(round_id: str) -> bool:
     conn = get_db_connection()
     if conn is None: return False
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO event_participants (event_id, user_id, choice, paid_amount) VALUES (%s, %s, %s, %s)",
-            (event_id, user_id, choice, paid_amount)
-        )
+        cursor.execute("DELETE FROM roulette_bets WHERE round_id = %s", (round_id,))
         conn.commit()
         return True
     except Error as e:
-        if e.errno == 1062: # Duplicate entry for UNIQUE constraint
-            print(f"User {user_id} sudah terdaftar di event {event_id}.")
-            return False
-        print(f"ERROR ADD PARTICIPANT: {e}")
-        return False
-    finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
-
-async def get_event_participants(event_id: int) -> list[dict]:
-    conn = get_db_connection()
-    if conn is None: return []
-    cursor = conn.cursor(dictionary=True)
-    try:
-        cursor.execute("SELECT user_id, choice, paid_amount FROM event_participants WHERE event_id = %s", (event_id,))
-        return cursor.fetchall()
-    except Error as e:
-        print(f"ERROR GET PARTICIPANTS: {e}")
-        return []
-    finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
-
-async def end_event_db(event_id: int, winning_choice: str) -> bool:
-    conn = get_db_connection()
-    if conn is None: return False
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "UPDATE events SET status = 'finished', winning_choice = %s WHERE event_id = %s",
-            (winning_choice, event_id)
-        )
-        conn.commit()
-        return cursor.rowcount > 0
-    except Error as e:
-        print(f"ERROR END EVENT: {e}")
+        print(f"ERROR CLEAR ROULETTE BETS: {e}")
         return False
     finally:
         if cursor: cursor.close()
@@ -405,10 +367,11 @@ async def end_event_db(event_id: int, winning_choice: str) -> bool:
 async def on_ready():
     print(f'Bot {client.user} berhasil login!')
     print(f'ID Bot: {client.user.id}')
-    await client.change_presence(activity=discord.Game(name="main !blackjack, !flipcoin, !daily, dan event!"))
+    # Mengupdate status bot untuk hanya menampilkan game yang ada
+    await client.change_presence(activity=discord.Game(name="main !blackjack, !flipcoin, !roulette"))
     print("Bot siap melayani perintah!")
 
-# --- Event Bot Menerima Reaksi (Diperbarui untuk Flip Coin dan Event Bola) ---
+# --- Event Bot Menerima Reaksi (Diperbarui untuk Flip Coin) ---
 @client.event
 async def on_reaction_add(reaction, user):
     if user.bot:
@@ -436,7 +399,6 @@ async def on_reaction_add(reaction, user):
 
         try:
             await reaction.message.remove_reaction(reaction.emoji, user)
-            # await reaction.message.clear_reactions() # Hapus semua reaksi setelah aksi? (Opsional, jika hanya 1 aksi)
         except discord.Forbidden:
             print("Bot tidak memiliki izin untuk menghapus reaksi.")
 
@@ -465,9 +427,9 @@ async def on_reaction_add(reaction, user):
                     f"Kartu Dealer: {dealer_hand_str_current} (Total: {dealer_score_current})\n"
                     "Klik ✅ untuk HIT atau 🟥 untuk STAND."
                 )
-                # Pastikan message_id lama dihapus dan yang baru ditambahkan
-                del blackjack_message_to_player[reaction.message.id] # Hapus pesan lama
-                blackjack_message_to_player[new_message.id] = user.id # Tambahkan pesan baru
+                blackjack_message_to_player[new_message.id] = user.id
+                if reaction.message.id in blackjack_message_to_player:
+                    del blackjack_message_to_player[reaction.message.id]
                 await new_message.add_reaction('✅')
                 await new_message.add_reaction('🟥')
 
@@ -481,7 +443,7 @@ async def on_reaction_add(reaction, user):
             bet_amount = game.bet_amount
 
             if result == "dealer_bust":
-                user_data = await get_user_data(user.id) # Perbaikan: Pastikan user_data diambil
+                user_data = await get_user_data(user.id)
                 final_cash = user_data["cash"] + (bet_amount * 2)
                 await update_user_cash(user.id, final_cash)
                 response_message = (
@@ -491,7 +453,7 @@ async def on_reaction_add(reaction, user):
                     f"🎉 **DEALER BUST! Anda menang {bet_amount * 2} koin!** 🎉"
                 )
             elif result == "player_win":
-                user_data = await get_user_data(user.id) # Perbaikan: Pastikan user_data diambil
+                user_data = await get_user_data(user.id)
                 final_cash = user_data["cash"] + (bet_amount * 2)
                 await update_user_cash(user.id, final_cash)
                 response_message = (
@@ -508,7 +470,7 @@ async def on_reaction_add(reaction, user):
                     f"💔 **DEALER MENANG! Anda kalah {bet_amount} koin.** 😥"
                 )
             elif result == "tie":
-                user_data = await get_user_data(user.id) # Perbaikan di sini
+                user_data = await get_user_data(user.id)
                 final_cash = user_data["cash"] + bet_amount
                 await update_user_cash(user.id, final_cash)
                 response_message = (
@@ -520,9 +482,9 @@ async def on_reaction_add(reaction, user):
             
             await reaction.message.channel.send(response_message)
             del active_blackjack_games[user.id]
-            del blackjack_message_to_player[reaction.message.id] # Hapus pesan lama
+            del blackjack_message_to_player[reaction.message.id]
 
-    # --- Logika untuk Flip Coin ---
+    # --- Logika untuk Flip Coin (BARU) ---
     elif reaction.message.id in active_flipcoin_games:
         game = active_flipcoin_games.get(reaction.message.id)
 
@@ -538,7 +500,7 @@ async def on_reaction_add(reaction, user):
                 await reaction.message.remove_reaction(reaction.emoji, user)
             except discord.Forbidden:
                 pass
-            del active_flipcoin_games[reaction.message.id]
+            del active_flipcoin_games[reaction.message.id] # Hapus dari pelacakan jika sudah selesai
             return
 
         try:
@@ -554,15 +516,15 @@ async def on_reaction_add(reaction, user):
         else: # Reaksi bukan emoji pilihan
             return
 
-        game.player_choice = user_choice_str
-        game.game_active = False # Game selesai setelah pilihan diterima
+        game.player_choice = user_choice_str # Simpan pilihan pemain
+        game.game_active = False # Tandai game tidak lagi aktif menunggu pilihan
 
         # Lakukan lemparan koin
         coin_sides = ['kepala', 'ekor']
         coin_result = random.choice(coin_sides)
         
         result_message = ""
-        user_data = await get_user_data(user.id) # Perbaikan: Pastikan user_data diambil
+        user_data = await get_user_data(user.id)
         current_cash = user_data["cash"]
         
         if user_choice_str == coin_result:
@@ -577,7 +539,7 @@ async def on_reaction_add(reaction, user):
             )
             print(f"{user.name} menang {winning_amount} di flipcoin.")
         else:
-            final_cash = current_cash # Uang sudah dikurangi di awal, tidak perlu pengurangan lagi
+            final_cash = current_cash
             result_message = (
                 f"💔 **LEMPAR KOIN! Anda Kalah.** 💔\n"
                 f"Anda memilih **{user_choice_str.upper()}**. Koin mendarat di **{coin_result.upper()}**!\n"
@@ -590,77 +552,73 @@ async def on_reaction_add(reaction, user):
         del active_flipcoin_games[reaction.message.id]
         await reaction.message.clear_reactions()
 
-    # --- Logika untuk Event Bola (BARU) ---
-    # Ini adalah bagian where partisipan bergabung ke event dengan reaksi
-    else: # Jika reaksi bukan untuk Blackjack atau Flipcoin, cek untuk event bola
-        conn = get_db_connection()
-        if conn is None: return
+    # --- Logika untuk Roulette (TARUHAN VIA REAKSI) ---
+    elif reaction.message.id in ROULETTE_BET_MESSAGE_TO_USER: # Cek apakah ini pesan taruhan roulette
+        channel_id_for_roulette = ROULETTE_BET_MESSAGE_TO_USER[reaction.message.id]
 
-        cursor = conn.cursor(dictionary=True)
-        try:
-            # Ambil event yang pesannya cocok dengan reaksi
-            cursor.execute("SELECT * FROM events WHERE message_id = %s AND status = 'open'", (reaction.message.id,))
-            event = cursor.fetchone()
+        if channel_id_for_roulette in current_roulette_rounds and \
+           current_roulette_rounds[channel_id_for_roulette]["status"] == "betting":
+            
+            roulette_round = current_roulette_rounds[channel_id_for_roulette]
+            round_id = roulette_round["round_id"]
 
-            if event:
-                event_id = event['event_id']
-                bet_cost = event['bet_cost']
-                
-                # Cek apakah user sudah berpartisipasi
-                cursor.execute("SELECT * FROM event_participants WHERE event_id = %s AND user_id = %s", (event_id, user.id))
-                already_joined = cursor.fetchone()
-                if already_joined:
-                    await reaction.message.channel.send(f"**{user.display_name}**, Anda sudah berpartisipasi dalam event ini.")
-                    try:
-                        await reaction.message.remove_reaction(reaction.emoji, user)
-                    except discord.Forbidden: pass
-                    return
+            if user.bot:
+                return
+            
+            # Periksa apakah pengguna sudah bertaruh warna di putaran ini
+            user_bets = roulette_round["bets"].get(user.id, [])
+            if any(b['bet_type'] == 'color' and b.get('via_emoji', False) for b in user_bets):
+                 await reaction.message.channel.send(f"**{user.display_name}**, Anda sudah memasang taruhan warna via emoji di putaran ini. Gunakan `!bet` untuk taruhan lain.", ephemeral=True) # Perbaikan: Hapus ephemeral
+                 try: await reaction.message.remove_reaction(reaction.emoji, user)
+                 except discord.Forbidden: pass
+                 return
 
-                # Tentukan pilihan berdasarkan emoji
-                user_choice = None
-                if str(reaction.emoji) == EVENT_TEAM_RED_EMOJI:
-                    user_choice = 'merah'
-                elif str(reaction.emoji) == EVENT_TEAM_BLUE_EMOJI:
-                    user_choice = 'biru'
-                else: # Emoji bukan pilihan event
-                    try:
-                        await reaction.message.remove_reaction(reaction.emoji, user)
-                    except discord.Forbidden: pass
-                    return
+            bet_amount = 10 # Default taruhan untuk reaksi warna
+            bet_type = 'color'
+            bet_choice = None
 
-                # Cek saldo user
-                user_data = await get_user_data(user.id) # Perbaikan: Pastikan user_data diambil
-                current_cash = user_data["cash"]
-                if current_cash < bet_cost:
-                    await reaction.message.channel.send(f"**{user.display_name}**, uang Anda tidak cukup ({current_cash} koin). Event ini membutuhkan {bet_cost} koin.")
-                    try:
-                        await reaction.message.remove_reaction(reaction.emoji, user)
-                    except discord.Forbidden: pass
-                    return
-                
-                # Kurangi uang dan catat partisipasi
-                new_cash = current_cash - bet_cost
-                await update_user_cash(user.id, new_cash)
-                success_participant = await add_participant_to_event(event_id, user.id, user_choice, bet_cost)
-
-                if success_participant:
-                    await reaction.message.channel.send(
-                        f"**{user.display_name}** berhasil bergabung ke Event ID `{event_id}` ({event['description']}) dengan memilih **{user_choice.upper()}** dan membayar **{bet_cost} koin**."
-                        f" Uang Anda sekarang: **{new_cash} koin**."
-                    )
-                    print(f"{user.name} bergabung event {event_id} dengan pilihan {user_choice}.")
-                else:
-                    await reaction.message.channel.send(f"**{user.display_name}**, gagal bergabung ke event. Mungkin Anda sudah terdaftar atau terjadi kesalahan.")
-                
-                try: # Hapus reaksi user setelah berhasil bergabung
-                    await reaction.message.remove_reaction(reaction.emoji, user)
+            if str(reaction.emoji) == ROULETTE_RED_EMOJI:
+                bet_choice = 'merah'
+            elif str(reaction.emoji) == ROULETTE_BLACK_EMOJI:
+                bet_choice = 'hitam'
+            
+            if not bet_choice: # Emoji bukan untuk taruhan warna roulette
+                try: await reaction.message.remove_reaction(reaction.emoji, user)
                 except discord.Forbidden: pass
-
-        except Error as e:
-            print(f"ERROR ON REACTION ADD (EVENT): {e}")
-        finally:
-            if cursor: cursor.close()
-            if conn: conn.close()
+                return
+            
+            user_data = await get_user_data(user.id)
+            current_cash = user_data["cash"]
+            if current_cash < bet_amount:
+                await reaction.message.channel.send(f"**{user.display_name}**, uang Anda tidak cukup ({current_cash} koin) untuk taruhan {bet_amount} koin.") # Perbaikan: Hapus ephemeral
+                try: await reaction.message.remove_reaction(reaction.emoji, user)
+                except discord.Forbidden: pass
+                return
+            
+            new_cash = current_cash - bet_amount
+            await update_user_cash(user.id, new_cash)
+            
+            # Tambahkan taruhan ke DB
+            success_bet = await add_roulette_bet(round_id, user.id, bet_type, bet_choice, bet_amount)
+            
+            if success_bet:
+                if user.id not in roulette_round["bets"]:
+                    roulette_round["bets"][user.id] = [] # Inisialisasi daftar taruhan untuk user ini
+                roulette_round["bets"][user.id].append({"amount": bet_amount, "bet_type": bet_type, "bet_choice": bet_choice, "via_emoji": True})
+                await reaction.message.channel.send(
+                    f"**{user.display_name}** menempatkan taruhan **{bet_amount} koin** pada **{bet_choice.upper()}** (via emoji). Uang Anda sekarang: **{new_cash} koin**."
+                )
+                print(f"{user.name} menaruh {bet_amount} koin di roulette via emoji.")
+            else:
+                await reaction.message.channel.send(f"Gagal menempatkan taruhan Roulette. Terjadi kesalahan database.") # Perbaikan: Hapus ephemeral
+                await update_user_cash(user.id, current_cash) # Kembalikan uang jika gagal
+                print(f"WARNING: Taruhan Roulette via emoji {user.id} gagal DB, uang dikembalikan.")
+            
+            try: await reaction.message.remove_reaction(reaction.emoji, user)
+            except discord.Forbidden: pass
+        else: # Bukan putaran roulette aktif yang menunggu reaksi
+            try: await reaction.message.remove_reaction(reaction.emoji, user)
+            except discord.Forbidden: pass
 
 
 # --- Event Bot Menerima Pesan ---
@@ -671,12 +629,10 @@ async def on_message(message):
 
     msg_content = message.content.lower()
     user_id = message.author.id
+    channel_id = message.channel.id # Untuk Roulette
 
-    # --- Fungsi Pengecekan Role Izin !setadmin ---
-    # Fungsi ini perlu didefinisikan di level global agar bisa diakses oleh on_message
     def has_required_role(member: discord.Member, allowed_roles: list[int]) -> bool:
-        """Memeriksa apakah member memiliki salah satu dari role yang diizinkan."""
-        if not member.guild: # Tidak bisa memeriksa role di DM
+        if not member.guild:
             return False
         if not allowed_roles:
             return False
@@ -685,7 +641,6 @@ async def on_message(message):
                 return True
         return False
 
-    # --- Perintah !setadmin ---
     if msg_content.startswith('!setadmin '):
         if not message.guild:
             await message.channel.send("Perintah ini hanya bisa digunakan di dalam server Discord.")
@@ -736,14 +691,12 @@ async def on_message(message):
         else:
             await message.channel.send("Format yang benar: `!setadmin [add/remove] <Discord ID/@user>`")
 
-    # --- Perintah !balance ---
     elif msg_content == '!balance':
         user_data = await get_user_data(user_id)
         user_current_cash = user_data["cash"]
         await message.channel.send(f"{message.author.mention}, uang kamu saat ini: **{user_current_cash} koin**.")
         print(f"Merespons '!balance' dari {message.author.name}. Uang: {user_current_cash}")
 
-    # --- Perintah !daily ---
     elif msg_content == '!daily':
         daily_cooldown_hours = 12
         amount_to_give = 100
@@ -1007,197 +960,253 @@ async def on_message(message):
         await response_message.add_reaction(FLIPCOIN_HEAD_EMOJI)
         await response_message.add_reaction(FLIPCOIN_TAIL_EMOJI)
 
-    # --- Perintah !createevent (Admin only) ---
-    # Format: !createevent <event_type> <event_id_custom> <bet_cost> <description...>
-    # Contoh: !createevent bola 1 1000 Pertandingan UEFA Nations League: Portugal VS Spanyol
-    elif msg_content.startswith('!createevent '):
-        if not message.guild:
-            await message.channel.send("Perintah ini hanya bisa digunakan di dalam server Discord.")
-            return
-        # Perbaikan: Memeriksa role admin untuk event
-        if not has_required_role(message.author, ALLOWED_SETADMIN_ROLES):
-            await message.channel.send("Maaf, Anda tidak memiliki role yang diperlukan untuk membuat event.")
-            return
-
-        parts = message.content.split(' ', 4) # Split hingga 4 bagian: cmd, type, id, cost, desc
-        if len(parts) < 5:
-            await message.channel.send("Format yang benar: `!createevent <tipe_event> <ID_event_custom> <biaya_bet> <deskripsi_event>`")
-            await message.channel.send("Contoh: `!createevent bola 1 1000 Pertandingan UEFA Nations League: Portugal VS Spanyol`")
-            return
+    # --- Perintah Roulette (!roulette atau !rou) ---
+    elif msg_content.startswith('!roulette') or msg_content.startswith('!rou'):
+        parts = msg_content.split()
+        channel_id = message.channel.id
         
-        event_type = parts[1].lower()
-        try:
-            event_id_custom = int(parts[2])
-            bet_cost = int(parts[3])
-            description = parts[4]
-            if bet_cost <= 0:
-                await message.channel.send("Biaya bet harus positif.")
+        if len(parts) == 1 or (len(parts) == 2 and parts[1].lower() == 'start'):
+            print(f"DEBUG: !roulette start command received from {message.author.name} in channel {message.channel.name}")
+            # Periksa izin admin untuk memulai roulette
+            if not has_required_role(message.author, ALLOWED_SETADMIN_ROLES):
+                await message.channel.send("Maaf, hanya admin yang bisa memulai atau mengakhiri permainan Roulette.")
                 return
-        except ValueError:
-            await message.channel.send("ID event dan biaya bet harus berupa angka. Deskripsi event tidak boleh kosong.")
-            return
-        
-        # Cek apakah event_id_custom sudah ada
-        existing_event = await get_event_by_id(event_id_custom)
-        if existing_event:
-            await message.channel.send(f"Event dengan ID `{event_id_custom}` sudah ada. Gunakan ID lain atau akhiri event yang sudah ada.")
-            return
 
-        # Simpan event ke database
-        success = await create_event_db(event_type, event_id_custom, bet_cost, description, user_id)
-        if success:
-            event_message_text = (
-                f"📢 **EVENT BARU TELAH DIBUAT!** 📢\n"
-                f"**ID Event:** `{event_id_custom}`\n"
-                f"**Tipe:** {event_type.upper()}\n"
-                f"**Deskripsi:** {description}\n"
-                f"**Biaya Partisipasi:** **{bet_cost} koin**\n\n"
-                f"Untuk berpartisipasi, klik {EVENT_TEAM_RED_EMOJI} (Merah) atau {EVENT_TEAM_BLUE_EMOJI} (Biru) di bawah pesan ini."
-            )
-            event_message = await message.channel.send(event_message_text)
-            
-            # Simpan message_id dan channel_id ke database untuk event ini
-            await update_event_message_info(event_id_custom, event_message.id, message.channel.id)
-
-            await event_message.add_reaction(EVENT_TEAM_RED_EMOJI)
-            await event_message.add_reaction(EVENT_TEAM_BLUE_EMOJI)
-            
-            await message.channel.send(f"Event `{event_id_custom}` berhasil dibuat!")
-            print(f"Event {event_id_custom} ({event_type}) dibuat oleh {message.author.name}.")
-        else:
-            await message.channel.send("Gagal membuat event. Terjadi kesalahan database.")
-
-    # --- Perintah !endevent (Admin only) ---
-    # Format: !endevent <event_id> <winning_choice>
-    # Contoh: !endevent 1 merah
-    elif msg_content.startswith('!endevent '):
-        if not message.guild:
-            await message.channel.send("Perintah ini hanya bisa digunakan di dalam server Discord.")
-            return
-        if not has_required_role(message.author, ALLOWED_SETADMIN_ROLES):
-            await message.channel.send("Maaf, Anda tidak memiliki role yang diperlukan untuk mengakhiri event.")
-            return
-
-        parts = message.content.split()
-        if len(parts) != 3:
-            await message.channel.send("Format yang benar: `!endevent <ID_event> <merah/biru>`")
-            return
-        
-        try:
-            event_id = int(parts[1])
-            winning_choice = parts[2].lower()
-            if winning_choice not in ['merah', 'biru']:
-                await message.channel.send("Pilihan pemenang harus 'merah' atau 'biru'.")
+            if channel_id in current_roulette_rounds and current_roulette_rounds[channel_id]["status"] == "betting":
+                await message.channel.send("Permainan Roulette sudah aktif di channel ini. Silakan pasang taruhan Anda.")
                 return
-        except ValueError:
-            await message.channel.send("ID event harus berupa angka.")
-            return
 
-        event_data_for_distro = await get_event_by_id(event_id) # Ambil data event
-        if not event_data_for_distro:
-            await message.channel.send(f"Event dengan ID `{event_id}` tidak ditemukan.")
-            return
-        if event_data_for_distro['status'] == 'finished':
-            await message.channel.send(f"Event dengan ID `{event_id}` sudah selesai.")
-            return
-        if event_data_for_distro['status'] == 'closed':
-            await message.channel.send(f"Event dengan ID `{event_id}` sudah ditutup pendaftarannya. Mohon tunggu proses pembagian hadiah.")
-            return
-        
-        # Akhiri event di database
-        success = await end_event_db(event_id, winning_choice)
-        if success:
-            await message.channel.send(f"Event `{event_id}` berhasil diakhiri dengan pemenang **{winning_choice.upper()}**!")
-            print(f"Event {event_id} diakhiri oleh {message.author.name} dengan pemenang {winning_choice}.")
-            
-            # Mulai proses pembagian hadiah
-            await distribute_event_prizes(event_data_for_distro, winning_choice, message.channel)
-            
-        else:
-            await message.channel.send("Gagal mengakhiri event. Terjadi kesalahan database.")
+            round_id = datetime.now().strftime("%Y%m%d%H%M%S") + str(random.randint(0, 999)) # ID unik untuk putaran
+            current_roulette_rounds[channel_id] = {
+                "status": "betting",
+                "round_id": round_id,
+                "message_id": 0, # Akan diisi setelah pesan dikirim
+                "bets": {} # {user_id: [taruhan_obj]} -> [taruhan_obj] = {"amount": int, "bet_type": str, "bet_choice": str}
+            }
 
-    # --- Perintah !listevent ---
-    elif msg_content == '!listevent':
-        open_events = await get_open_events()
-        if not open_events:
-            await message.channel.send("Tidak ada event yang sedang berjalan saat ini.")
-            return
-        
-        event_list_message = "✨ **DAFTAR EVENT YANG SEDANG BERJALAN** ✨\n\n"
-        for event in open_events:
-            event_list_message += (
-                f"**ID:** `{event['event_id']}`\n"
-                f"**Tipe:** {event['event_type'].upper()}\n"
-                f"**Deskripsi:** {event['description']}\n"
-                f"**Biaya Partisipasi:** {event['bet_cost']} koin\n"
-                f"**Dibuat oleh:** <@{event['created_by']}> pada {event['created_at'].strftime('%Y-%m-%d %H:%M')}\n"
-                f"----------------------------------------\n"
+            roulette_info_message = await message.channel.send(
+                f"🎰 **ROULETTE BARU DIMULAI!** 🎰\n"
+                f"**Putaran ID:** `{round_id}`\n"
+                f"**Taruhan dibuka!** Anda bisa pasang taruhan dengan `!bet <jumlah> <jenis_taruhan> <pilihan>`.\n\n"
+                f"**Jenis Taruhan (Contoh):**\n"
+                f"  `!bet 50 merah` (atau `hitam`)\n"
+                f"  `!bet 50 genap` (atau `ganjil`)\n"
+                f"  `!bet 50 tinggi` (19-36) (atau `rendah` (1-18))\n"
+                f"  `!bet 10 angka 7` (atau angka 0-36)\n"
+                f"  `!bet 20 1st12` (1-12) (atau `2nd12`, `3rd12`)\n"
+                f"  `!bet 20 col1` (kolom 1) (atau `col2`, `col3`)\n\n"
+                f"Taruhan cepat: Klik {ROULETTE_RED_EMOJI} untuk Merah atau {ROULETTE_BLACK_EMOJI} untuk Hitam (default 10 koin)."
             )
-        await message.channel.send(event_list_message)
-        print(f"{message.author.name} melihat daftar event.")
-
-# --- Fungsi Pembagian Hadiah Event ---
-async def distribute_event_prizes(event: dict, winning_choice: str, channel: discord.TextChannel):
-    conn = get_db_connection()
-    if conn is None:
-        await channel.send(f"Gagal membagikan hadiah event `{event['event_id']}`: Koneksi database gagal.")
-        return
-
-    cursor = conn.cursor(dictionary=True)
-    try:
-        participants = await get_event_participants(event['event_id'])
-        
-        total_pot = 0
-        winners = []
-
-        for p in participants:
-            total_pot += p['paid_amount']
-            if p['choice'] == winning_choice:
-                winners.append(p)
-
-        if not winners:
-            await channel.send(
-                f"Event `{event['event_id']}` selesai. "
-                f"Tidak ada pemenang untuk pilihan **{winning_choice.upper()}**. "
-                f"Total pot **{total_pot} koin** akan menjadi milik bot." # Menjelaskan ke mana uang pergi
-            )
-            return
-        
-        prize_pool = total_pot
-        prize_per_winner = prize_pool / len(winners)
-
-        winner_mentions = []
-        for winner in winners:
-            user_id = winner['user_id']
-            user_data = await get_user_data(user_id) # Ambil saldo terbaru
-            current_cash = user_data["cash"]
-            new_cash = current_cash + int(prize_per_winner) # Tambah hadiah, bulatkan ke bawah
-            await update_user_cash(user_id, new_cash)
+            current_roulette_rounds[channel_id]["message_id"] = roulette_info_message.id
+            # Tambahkan message_id ke ROULETTE_BET_MESSAGE_TO_USER untuk dilacak reaksinya
+            ROULETTE_BET_MESSAGE_TO_USER[roulette_info_message.id] = channel_id
+            await roulette_info_message.add_reaction(ROULETTE_RED_EMOJI) # Emoji untuk Merah
+            await roulette_info_message.add_reaction(ROULETTE_BLACK_EMOJI) # Emoji untuk Hitam
             
-            winner_user = await client.fetch_user(user_id) # Ambil objek user dari Discord
-            if winner_user:
-                winner_mentions.append(winner_user.mention) # Menggunakan mention
+            print(f"Roulette putaran {round_id} dimulai di channel {message.channel.name}.")
+
+        elif len(parts) == 2 and parts[1].lower() == 'spin':
+            print(f"DEBUG: !roulette spin command received from {message.author.name} in channel {message.channel.name}")
+            # Periksa izin admin untuk mengakhiri roulette
+            if not has_required_role(message.author, ALLOWED_SETADMIN_ROLES):
+                await message.channel.send("Maaf, hanya admin yang bisa memulai atau mengakhiri permainan Roulette.")
+                return
+
+            if channel_id not in current_roulette_rounds or current_roulette_rounds[channel_id]["status"] != "betting":
+                await message.channel.send("Tidak ada permainan Roulette yang aktif untuk diputar. Mulai dengan `!roulette start`.")
+                return
+            
+            round_info = current_roulette_rounds[channel_id]
+            round_id = round_info["round_id"]
+            current_roulette_rounds[channel_id]["status"] = "spinning" # Tandai sebagai spinning
+
+            await message.channel.send("🚫 **NO MORE BETS!** 🚫 Roda berputar... 🎡")
+            
+            # Hapus reaksi dari pesan pengumuman taruhan
+            if round_info["message_id"] != 0:
+                try:
+                    roulette_msg = await message.channel.fetch_message(round_info["message_id"])
+                    await roulette_msg.clear_reactions()
+                    del ROULETTE_BET_MESSAGE_TO_USER[roulette_msg.id] # Hapus dari pelacakan pesan
+                except discord.NotFound:
+                    print(f"Pesan roulette {round_info['message_id']} tidak ditemukan saat clear reactions.")
+                except discord.Forbidden:
+                    print("Bot tidak memiliki izin untuk menghapus reaksi.")
+            
+            winning_number = random.choice(list(ROULETTE_NUMBERS.keys()))
+            winning_color = ROULETTE_NUMBERS[winning_number]
+            winning_parity = 'genap' if winning_number % 2 == 0 and winning_number != 0 else 'ganjil' if winning_number != 0 else 'none'
+            winning_half = 'tinggi' if 19 <= winning_number <= 36 else 'rendah' if 1 <= winning_number <= 18 else 'none'
+
+            await message.channel.send(f"⚪ **Angka pemenang: {winning_number} ({winning_color.upper()})!** ⚪")
+            print(f"DEBUG: Angka pemenang Roulette: {winning_number} ({winning_color.upper()}).")
+
+            # Proses taruhan
+            bets = await get_roulette_bets_for_round(round_id)
+            print(f"DEBUG: Ditemukan {len(bets)} taruhan untuk putaran {round_id}.")
+            
+            total_winnings = {} # {user_id: jumlah_kemenangan_bersih}
+            total_lost_to_house = 0 # Untuk melacak uang yang masuk ke bot
+
+            for bet in bets:
+                user_id_bet = bet['user_id']
+                bet_type = bet['bet_type']
+                bet_choice = bet['bet_choice']
+                amount = bet['amount']
+                
+                is_winner = False
+                payout_multiplier = 0
+
+                if bet_type == 'number' and str(winning_number) == bet_choice: # Perbandingan string
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['number']
+                elif bet_type == 'color' and winning_color == bet_choice:
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['color']
+                elif bet_type == 'parity' and winning_parity == bet_choice:
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['parity']
+                elif bet_type == 'half' and winning_half == bet_choice:
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['half']
+                elif bet_type == 'dozen' and winning_number in ROULETTE_DOZENS.get(bet_choice, []):
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['dozen']
+                elif bet_type == 'column' and winning_number in ROULETTE_COLUMNS.get(bet_choice, []):
+                    is_winner = True
+                    payout_multiplier = ROULETTE_PAYOUTS['column']
+                
+                if is_winner:
+                    winnings = amount + (amount * payout_multiplier) # Taruhan kembali + keuntungan
+                    total_winnings[user_id_bet] = total_winnings.get(user_id_bet, 0) + winnings
+                    print(f"DEBUG: Taruhan {user_id_bet} ({bet_type}/{bet_choice}) menang {winnings}.")
+                else:
+                    total_lost_to_house += amount
+                    print(f"DEBUG: Taruhan {user_id_bet} ({bet_type}/{bet_choice}) kalah {amount}.")
+            
+            # Distribusi kemenangan
+            winner_mentions = []
+            for user_id_winner, winnings_amount in total_winnings.items():
+                user_data = await get_user_data(user_id_winner)
+                current_cash = user_data["cash"]
+                new_cash = current_cash + winnings_amount
+                success_update = await update_user_cash(user_id_winner, new_cash)
+                
+                if success_update:
+                    winner_discord_user = await client.fetch_user(user_id_winner)
+                    if winner_discord_user:
+                        winner_mentions.append(f"🎉 **{winner_discord_user.display_name}** menang **{winnings_amount} koin**! Saldo baru: **{new_cash} koin**.")
+                    else:
+                        winner_mentions.append(f"🎉 **User ID {user_id_winner}** menang **{winnings_amount} koin**! Saldo baru: **{new_cash} koin**.")
+                    print(f"DEBUG: Kemenangan {user_id_winner} di Roulette berhasil diupdate.")
+                else:
+                    await message.channel.send(f"⚠️ **ERROR:** Gagal update cash untuk pemenang <@{user_id_winner}> di Roulette. Hubungi admin.")
+                    print(f"ERROR: Gagal update cash untuk pemenang {user_id_winner} di Roulette.")
+            
+            if winner_mentions:
+                await message.channel.send("--- **HASIL ROULETTE** ---\n" + "\n".join(winner_mentions))
             else:
-                winner_mentions.append(f"User ID {user_id}")
+                await message.channel.send(f"Tidak ada yang menang di putaran ini. Semua taruhan ({total_lost_to_house} koin) menjadi milik rumah.")
+            
+            # Hapus taruhan dari database
+            await clear_roulette_bets(round_id)
+            del current_roulette_rounds[channel_id] # Hapus putaran aktif
 
-        await channel.send(
-            f"🏆 **HADIAH EVENT `{event['event_id']}` DIBAGIKAN!** 🏆\n"
-            f"Event **'{event['description']}'** telah berakhir!\n"
-            f"Pilihan yang menang adalah **{winning_choice.upper()}**.\n"
-            f"Total pot: **{total_pot} koin**.\n"
-            f"Jumlah pemenang: **{len(winners)} orang**.\n"
-            f"Setiap pemenang mendapatkan: **{int(prize_per_winner)} koin**.\n"
-            f"Pemenang: {', '.join(winner_mentions)}!"
-        )
-        print(f"Hadiah event {event['event_id']} dibagikan. Pemenang: {', '.join(winner_mentions)}.")
+        else:
+            await message.channel.send("Format yang benar: `!roulette start` untuk memulai atau `!roulette spin` untuk memutar roda.")
 
-    except Error as e:
-        print(f"ERROR DISTRIBUTE PRIZES: {e}")
-        await channel.send(f"Terjadi kesalahan saat membagikan hadiah event `{event['event_id']}`.")
-    finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
+    # --- Perintah !bet (untuk menempatkan taruhan di Roulette) ---
+    elif msg_content.startswith('!bet '):
+        parts = message.content.split(' ', 3) # !bet amount type choice
+        channel_id = message.channel.id
 
+        if channel_id not in current_roulette_rounds or current_roulette_rounds[channel_id]["status"] != "betting":
+            await message.channel.send("Tidak ada putaran Roulette yang aktif di channel ini. Mulai dengan `!roulette start`.")
+            return
+        
+        if len(parts) < 3: # Minimal !bet <amount> <type>
+            await message.channel.send("Format taruhan tidak benar. Contoh: `!bet 100 merah` atau `!bet 20 angka 7`.")
+            return
+        
+        try:
+            bet_amount = int(parts[1])
+            if bet_amount <= 0:
+                await message.channel.send("Jumlah taruhan harus positif.")
+                return
+        except ValueError:
+            await message.channel.send("Jumlah taruhan harus berupa angka.")
+            return
+        
+        user_data = await get_user_data(user_id)
+        current_cash = user_data["cash"]
+        if current_cash < bet_amount:
+            await message.channel.send(f"Uangmu tidak cukup untuk bertaruh **{bet_amount} koin**. Uangmu saat ini: {current_cash} koin.")
+            return
+
+        bet_type_raw = parts[2].lower()
+        bet_choice = parts[3].lower() if len(parts) > 3 else "" # Pilihan taruhan
+
+        valid_bet = False
+        parsed_bet_type = None
+        parsed_bet_choice = None
+
+        if bet_type_raw in ['merah', 'hitam']:
+            parsed_bet_type = 'color'
+            parsed_bet_choice = bet_type_raw
+            valid_bet = True
+        elif bet_type_raw in ['genap', 'ganjil']:
+            parsed_bet_type = 'parity'
+            parsed_bet_choice = bet_type_raw
+            valid_bet = True
+        elif bet_type_raw in ['tinggi', 'rendah']:
+            parsed_bet_type = 'half'
+            parsed_bet_choice = bet_type_raw
+            valid_bet = True
+        elif bet_type_raw == 'angka':
+            try:
+                num_choice = int(bet_choice)
+                if 0 <= num_choice <= 36:
+                    parsed_bet_type = 'number'
+                    parsed_bet_choice = str(num_choice)
+                    valid_bet = True
+            except ValueError:
+                pass # Tetap False
+        elif bet_type_raw in ['1st12', '2nd12', '3rd12']:
+            parsed_bet_type = 'dozen'
+            parsed_bet_choice = bet_type_raw
+            valid_bet = True
+        elif bet_type_raw in ['col1', 'col2', 'col3']:
+            parsed_bet_type = 'column'
+            parsed_bet_choice = bet_type_raw
+            valid_bet = True
+        
+        if not valid_bet:
+            await message.channel.send("Jenis taruhan tidak valid atau pilihan salah. Contoh: `!bet 100 merah`, `!bet 20 angka 7`, `!bet 50 genap`.")
+            return
+
+        # Kurangi uang dan simpan taruhan
+        new_cash = current_cash - bet_amount
+        await update_user_cash(user_id, new_cash)
+        
+        round_id = current_roulette_rounds[channel_id]["round_id"]
+        success_bet = await add_roulette_bet(round_id, user_id, parsed_bet_type, parsed_bet_choice, bet_amount)
+
+        if success_bet:
+            # Simpan juga di state lokal untuk mencegah duplikat taruhan emoji
+            if user_id not in current_roulette_rounds[channel_id]["bets"]: # Perbaikan: user_id bukan user.id
+                current_roulette_rounds[channel_id]["bets"][user_id] = [] # Perbaikan: user_id bukan user.id
+            current_roulette_rounds[channel_id]["bets"][user_id].append({"amount": bet_amount, "bet_type": parsed_bet_type, "bet_choice": parsed_bet_choice}) # Perbaikan: user_id
+
+            await message.channel.send(
+                f"**{message.author.display_name}** berhasil menempatkan taruhan **{bet_amount} koin** "
+                f"pada **{parsed_bet_type.upper()} - {parsed_bet_choice.upper()}**."
+                f" Uang Anda sekarang: **{new_cash} koin**."
+            )
+            print(f"{message.author.name} bertaruh {bet_amount} di roulette: {parsed_bet_type}/{parsed_bet_choice}.")
+        else:
+            await message.channel.send(f"Gagal menempatkan taruhan. Terjadi kesalahan database.")
+            await update_user_cash(user_id, current_cash) # Kembalikan uang jika taruhan gagal masuk DB
+            print(f"WARNING: Taruhan {user_id} {bet_amount} di roulette gagal DB, uang dikembalikan.")
 
 # --- Jalankan Bot dengan Token ---
 client.run(TOKEN)
