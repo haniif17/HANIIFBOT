@@ -368,8 +368,8 @@ async def on_ready():
     print(f'Bot {client.user} berhasil login!')
     print(f'ID Bot: {client.user.id}')
     # Mengupdate status bot untuk hanya menampilkan game yang ada
-    await client.change_presence(activity=discord.Game(name="main !blackjack, !flipcoin, !roulette"))
-    print("Bot siap melayani perintah!")
+    await client.change_presence(activity=discord.Game(name="type !listgame for the list!"))
+    print("HANIIF BOT  siap melayani perintah!")
 
 # --- Event Bot Menerima Reaksi (Diperbarui untuk Flip Coin) ---
 @client.event
@@ -861,6 +861,10 @@ async def on_message(message):
     elif msg_content == '!info':
         await message.channel.send("Saya adalah bot sederhana yang dibuat dengan discord.py.")
         print(f"Merespons '!info' dari {message.author.name}")
+    elif msg_content == '!listgame':
+        await message.channel.send(
+        f"{message.author.mention} List Game: \n 1. BlackJack (!bj) \n 2. Flip Coin (!fc) \n 3. Roulette (!rou start)")
+        print(f"Merespons '!listgame' dari {message.author.name}")
     
     # --- Perintah Permainan Blackjack ---
     elif msg_content.startswith('!blackjack ') or msg_content.startswith('!bj '):
